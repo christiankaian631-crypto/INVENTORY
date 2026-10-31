@@ -18,6 +18,7 @@ import { ExcelUploader } from './components/ExcelUploader';
 import { InventoryOpnameTable } from './components/InventoryOpnameTable';
 import { MonthlyRekapView } from './components/MonthlyRekapView';
 import { AddOpnameItemModal } from './components/AddOpnameItemModal';
+import { FirebaseRulesBanner } from './components/FirebaseRulesBanner';
 import { downloadTemplateExcel, exportToExcel } from './utils/excelHelper';
 import {
   getOutlets,
@@ -346,6 +347,9 @@ export default function App() {
         soundMuted={soundMuted}
         onToggleSound={handleToggleSound}
       />
+
+      {/* Firebase Rules Alert Banner (Shows instructions if rules in Firebase console are locked) */}
+      <FirebaseRulesBanner />
 
       {/* Main Content Viewport */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">

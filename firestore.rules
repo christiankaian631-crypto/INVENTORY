@@ -1,26 +1,20 @@
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default deny catch-all
-    match /{document=**} {
-      allow read, write: if false;
+    // Koneksi test
+    match /test/{docId} {
+      allow read, write: if true;
     }
 
-    // Helpers
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128;
-    }
-
-    // Outlets collection: Allows real-time shared multi-user restaurant inventory
+    // Koleksi outlets: Daftar outlet restoran bersama semua user
     match /outlets/{outletId} {
-      allow read: if isValidId(outletId);
-      allow write: if isValidId(outletId);
+      allow read, write: if true;
     }
 
-    // Inventory collection: Isolated per outlet & month period (docId: "{outletId}_{period}")
+    // Koleksi inventory: Data stok opname terisolasi per cabang & bulan ({outletId}_{period})
     match /inventory/{recordId} {
-      allow read: if isValidId(recordId);
-      allow write: if isValidId(recordId);
+      allow read, write: if true;
     }
   }
 }

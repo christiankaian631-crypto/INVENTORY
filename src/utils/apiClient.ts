@@ -6,13 +6,12 @@
 import {
   collection,
   doc,
-  getDoc,
   getDocs,
   setDoc,
   deleteDoc,
   onSnapshot,
 } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import { db, handleFirestoreError, OperationType, setPermissionDeniedState } from '../firebase';
 import { Outlet, DEFAULT_OUTLETS, OutletMonthData, WeekData, WeekId } from '../types/inventory';
 
 const STORAGE_OUTLETS_KEY = 'restaurant_outlets_list';
@@ -36,46 +35,106 @@ export function createEmptyMonthData(outletId: string, period: string): OutletMo
 }
 
 /**
- * Subscribes to real-time outlets updates via Firestore across all users
+ * Reads outlets from Local Storage and Server API (Zero failure fallback)
+ */
+export async function getLocalOutlets(): Promise<Outlet[]> {
+  // Try Backend Express API
+  try {
+    const res = await fetch('/api/outlets');
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(data));
+        return data;
+      }
+    }
+  } catch {}
+
+  // Try Local Storage
+  try {
+    const cached = localStorage.getItem(STORAGE_OUTLETS_KEY);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {}
+
+  return DEFAULT_OUTLETS;
+}
+
+/**
+ * Reads Month Inventory from Local Storage and Server API
+ */
+export async function getLocalMonthData(outletId: string, period: string): Promise<OutletMonthData> {
+  const docKey = `${outletId}_${period}`;
+  const cacheKey = `${STORAGE_DATA_PREFIX}${docKey}`;
+
+  // Try Local Storage first for instant response
+  try {
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      return JSON.parse(cached);
+    }
+  } catch {}
+
+  // Try Backend Express API
+  try {
+    const res = await fetch(`/api/inventory?outletId=${encodeURIComponent(outletId)}&period=${encodeURIComponent(period)}`);
+    if (res.ok) {
+      const data = await res.json();
+      localStorage.setItem(cacheKey, JSON.stringify(data));
+      return data;
+    }
+  } catch {}
+
+  return createEmptyMonthData(outletId, period);
+}
+
+/**
+ * Subscribes to real-time outlets updates via Firestore with graceful local fallback
  */
 export function subscribeOutlets(onUpdate: (outlets: Outlet[]) => void): () => void {
-  const outletsCol = collection(db, 'outlets');
+  // Immediately provide current local/cached outlets
+  getLocalOutlets().then(onUpdate);
 
-  const unsubscribe = onSnapshot(
-    outletsCol,
-    async (snapshot) => {
-      if (snapshot.empty) {
-        // If Firestore outlets collection is empty, seed with DEFAULT_OUTLETS
-        try {
-          for (const item of DEFAULT_OUTLETS) {
-            await setDoc(doc(db, 'outlets', item.id), item);
-          }
-        } catch {
-          // Ignored if permissions restrict seeding
+  try {
+    const outletsCol = collection(db, 'outlets');
+    const unsubscribe = onSnapshot(
+      outletsCol,
+      async (snapshot) => {
+        setPermissionDeniedState(false);
+        if (snapshot.empty) {
+          // Attempt seeding
+          try {
+            for (const item of DEFAULT_OUTLETS) {
+              await setDoc(doc(db, 'outlets', item.id), item);
+            }
+          } catch {}
+          onUpdate(DEFAULT_OUTLETS);
+          return;
         }
-        onUpdate(DEFAULT_OUTLETS);
-        return;
+
+        const list: Outlet[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push(docSnap.data() as Outlet);
+        });
+
+        if (list.length > 0) {
+          localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(list));
+          onUpdate(list);
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, 'outlets');
+        // Gracefully supply local storage and server outlets without re-triggering Firestore
+        getLocalOutlets().then(onUpdate);
       }
+    );
 
-      const list: Outlet[] = [];
-      snapshot.forEach((docSnap) => {
-        list.push(docSnap.data() as Outlet);
-      });
-
-      // Preserve default order or alphabetically
-      if (list.length > 0) {
-        localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(list));
-        onUpdate(list);
-      }
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.GET, 'outlets');
-      // Fallback to local storage or defaults on connection glitch
-      getOutlets().then(onUpdate);
-    }
-  );
-
-  return unsubscribe;
+    return unsubscribe;
+  } catch {
+    return () => {};
+  }
 }
 
 /**
@@ -89,52 +148,32 @@ export async function getOutlets(): Promise<Outlet[]> {
       const list: Outlet[] = [];
       snapshot.forEach((d) => list.push(d.data() as Outlet));
       localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(list));
+      setPermissionDeniedState(false);
       return list;
     }
   } catch (err) {
-    console.warn('Firestore getOutlets unavailable, using fallback:', err);
+    handleFirestoreError(err, OperationType.GET, 'outlets');
   }
 
-  // Fallback to backend API
-  try {
-    const res = await fetch('/api/outlets');
-    if (res.ok) {
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(data));
-        return data;
-      }
-    }
-  } catch {}
-
-  // Fallback to local storage
-  try {
-    const cached = localStorage.getItem(STORAGE_OUTLETS_KEY);
-    if (cached) {
-      const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    }
-  } catch {}
-
-  return DEFAULT_OUTLETS;
+  return getLocalOutlets();
 }
 
 /**
- * Adds a new outlet to Firestore (shared with all users)
+ * Adds a new outlet to Firestore & local storage
  */
 export async function addOutlet(name: string): Promise<Outlet> {
   const trimmed = name.trim().toUpperCase();
   const id = `sh-${trimmed.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString().slice(-4)}`;
   const newOutlet: Outlet = { id, name: trimmed, isCustom: true };
 
-  // Write to Firestore
+  // Update local storage immediately
   try {
-    await setDoc(doc(db, 'outlets', id), newOutlet);
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `outlets/${id}`);
-  }
+    const current = await getLocalOutlets();
+    const updated = [...current.filter((o) => o.id !== id), newOutlet];
+    localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(updated));
+  } catch {}
 
-  // Also notify server and local cache
+  // Sync with Backend Server API
   try {
     await fetch('/api/outlets', {
       method: 'POST',
@@ -143,11 +182,13 @@ export async function addOutlet(name: string): Promise<Outlet> {
     });
   } catch {}
 
+  // Write to Firestore if permitted
   try {
-    const current = await getOutlets();
-    const updated = [...current.filter((o) => o.id !== id), newOutlet];
-    localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(updated));
-  } catch {}
+    await setDoc(doc(db, 'outlets', id), newOutlet);
+    setPermissionDeniedState(false);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `outlets/${id}`);
+  }
 
   return newOutlet;
 }
@@ -156,26 +197,30 @@ export async function addOutlet(name: string): Promise<Outlet> {
  * Deletes a custom outlet
  */
 export async function deleteOutlet(id: string): Promise<void> {
+  // Update local storage
   try {
-    await deleteDoc(doc(db, 'outlets', id));
-  } catch (err) {
-    handleFirestoreError(err, OperationType.DELETE, `outlets/${id}`);
-  }
+    const current = await getLocalOutlets();
+    const updated = current.filter((o) => o.id !== id);
+    localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(updated));
+  } catch {}
 
+  // Update Backend Server API
   try {
     await fetch(`/api/outlets/${encodeURIComponent(id)}`, { method: 'DELETE' });
   } catch {}
 
+  // Delete from Firestore
   try {
-    const current = await getOutlets();
-    const updated = current.filter((o) => o.id !== id);
-    localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(updated));
-  } catch {}
+    await deleteDoc(doc(db, 'outlets', id));
+    setPermissionDeniedState(false);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `outlets/${id}`);
+  }
 }
 
 /**
  * Subscribes to real-time month inventory updates for a specific outlet and period.
- * Completely ISOLATED per outlet so data never leaks to other outlets.
+ * Completely ISOLATED per outlet.
  */
 export function subscribeOutletMonthData(
   outletId: string,
@@ -183,75 +228,48 @@ export function subscribeOutletMonthData(
   onUpdate: (data: OutletMonthData) => void
 ): () => void {
   const docKey = `${outletId}_${period}`;
-  const docRef = doc(db, 'inventory', docKey);
 
-  const unsubscribe = onSnapshot(
-    docRef,
-    (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data() as OutletMonthData;
-        const cacheKey = `${STORAGE_DATA_PREFIX}${docKey}`;
-        localStorage.setItem(cacheKey, JSON.stringify(data));
-        onUpdate(data);
-      } else {
-        // Document does not exist yet for this outlet and period
-        const emptyData = createEmptyMonthData(outletId, period);
-        onUpdate(emptyData);
+  // Serve local cached data immediately for instant response
+  getLocalMonthData(outletId, period).then(onUpdate);
+
+  try {
+    const docRef = doc(db, 'inventory', docKey);
+    const unsubscribe = onSnapshot(
+      docRef,
+      (snapshot) => {
+        setPermissionDeniedState(false);
+        if (snapshot.exists()) {
+          const data = snapshot.data() as OutletMonthData;
+          const cacheKey = `${STORAGE_DATA_PREFIX}${docKey}`;
+          localStorage.setItem(cacheKey, JSON.stringify(data));
+          onUpdate(data);
+        } else {
+          const emptyData = createEmptyMonthData(outletId, period);
+          onUpdate(emptyData);
+        }
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.GET, `inventory/${docKey}`);
+        // Gracefully use local data
+        getLocalMonthData(outletId, period).then(onUpdate);
       }
-    },
-    (error) => {
-      handleFirestoreError(error, OperationType.GET, `inventory/${docKey}`);
-      // Fallback
-      getOutletMonthData(outletId, period).then(onUpdate);
-    }
-  );
+    );
 
-  return unsubscribe;
+    return unsubscribe;
+  } catch {
+    return () => {};
+  }
 }
 
 /**
  * Fetches an outlet's month data (containing Week 1 to Week 4)
  */
 export async function getOutletMonthData(outletId: string, period: string): Promise<OutletMonthData> {
-  const docKey = `${outletId}_${period}`;
-  const cacheKey = `${STORAGE_DATA_PREFIX}${docKey}`;
-
-  // Try Firestore
-  try {
-    const docRef = doc(db, 'inventory', docKey);
-    const snap = await getDoc(docRef);
-    if (snap.exists()) {
-      const data = snap.data() as OutletMonthData;
-      localStorage.setItem(cacheKey, JSON.stringify(data));
-      return data;
-    }
-  } catch (err) {
-    console.warn('Firestore getOutletMonthData error, falling back:', err);
-  }
-
-  // Try Backend
-  try {
-    const res = await fetch(`/api/inventory?outletId=${encodeURIComponent(outletId)}&period=${encodeURIComponent(period)}`);
-    if (res.ok) {
-      const data = await res.json();
-      localStorage.setItem(cacheKey, JSON.stringify(data));
-      return data;
-    }
-  } catch {}
-
-  // Try Local Storage
-  try {
-    const cached = localStorage.getItem(cacheKey);
-    if (cached) {
-      return JSON.parse(cached);
-    }
-  } catch {}
-
-  return createEmptyMonthData(outletId, period);
+  return getLocalMonthData(outletId, period);
 }
 
 /**
- * Saves a week's inventory data to Firestore & notifies other users immediately
+ * Saves a week's inventory data to local storage, backend server, and Firestore
  */
 export async function saveWeekData(
   outletId: string,
@@ -278,20 +296,12 @@ export async function saveWeekData(
   monthObj.weeks[weekId] = weekData;
   monthObj.lastUpdated = new Date().toISOString();
 
-  // Save to local cache
+  // 1. Save to local storage
   try {
     localStorage.setItem(cacheKey, JSON.stringify(monthObj));
   } catch {}
 
-  // Write directly to Firestore
-  try {
-    const docRef = doc(db, 'inventory', docKey);
-    await setDoc(docRef, monthObj, { merge: true });
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, `inventory/${docKey}`);
-  }
-
-  // Send to backend endpoint as secondary sync
+  // 2. Save to Express server database
   try {
     await fetch('/api/inventory/save-week', {
       method: 'POST',
@@ -299,6 +309,15 @@ export async function saveWeekData(
       body: JSON.stringify({ outletId, period, weekId, weekData }),
     });
   } catch {}
+
+  // 3. Write to Firestore for cloud live multi-device sync
+  try {
+    const docRef = doc(db, 'inventory', docKey);
+    await setDoc(docRef, monthObj, { merge: true });
+    setPermissionDeniedState(false);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, `inventory/${docKey}`);
+  }
 }
 
 /**
@@ -310,7 +329,7 @@ export async function linkPreviousWeekData(
   currentWeekId: WeekId,
   previousWeekId: WeekId
 ): Promise<OutletMonthData | null> {
-  const currentMonthData = await getOutletMonthData(outletId, period);
+  const currentMonthData = await getLocalMonthData(outletId, period);
   const prevWeek = currentMonthData.weeks[previousWeekId];
 
   if (!prevWeek || !prevWeek.items || prevWeek.items.length === 0) {
@@ -346,7 +365,7 @@ export async function linkPreviousWeekData(
 }
 
 /**
- * Clears week data in Firestore and local state
+ * Clears week data in Firestore, backend, and local state
  */
 export async function clearWeekData(
   outletId: string,

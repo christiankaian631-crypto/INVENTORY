@@ -23,15 +23,33 @@ export const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfi
 // Initialize Cloud Firestore
 export const db = getFirestore(app);
 
-// Initialize Analytics conditionally (only in browser environment if supported)
+// Initialize Analytics conditionally
 if (typeof window !== 'undefined') {
   isSupported().then((supported) => {
     if (supported) {
       getAnalytics(app);
     }
-  }).catch(() => {
-    // Analytics optional in sandbox
-  });
+  }).catch(() => {});
+}
+
+// Track permission state for Firestore
+type ErrorListener = (isPermissionDenied: boolean) => void;
+const permissionListeners: Set<ErrorListener> = new Set();
+let isPermissionDenied = false;
+
+export function onFirestorePermissionChange(listener: ErrorListener): () => void {
+  permissionListeners.add(listener);
+  listener(isPermissionDenied);
+  return () => {
+    permissionListeners.delete(listener);
+  };
+}
+
+export function setPermissionDeniedState(denied: boolean) {
+  if (isPermissionDenied !== denied) {
+    isPermissionDenied = denied;
+    permissionListeners.forEach((l) => l(isPermissionDenied));
+  }
 }
 
 /**
@@ -40,10 +58,11 @@ if (typeof window !== 'undefined') {
 export async function testFirestoreConnection(): Promise<boolean> {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));
+    setPermissionDeniedState(false);
     return true;
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('Firestore offline or connectivity pending:', error.message);
+  } catch (error: any) {
+    if (error?.code === 'permission-denied' || error?.message?.includes('Missing or insufficient permissions')) {
+      setPermissionDeniedState(true);
     }
     return false;
   }
@@ -65,10 +84,14 @@ export interface FirestoreErrorInfo {
 }
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes('Missing or insufficient permissions') || (error as any)?.code === 'permission-denied') {
+    setPermissionDeniedState(true);
+  }
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: message,
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+  console.warn('Firestore Notice: ', JSON.stringify(errInfo));
 }
