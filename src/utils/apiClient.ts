@@ -15,6 +15,8 @@ import { db, handleFirestoreError, OperationType, setPermissionDeniedState } fro
 import { Outlet, DEFAULT_OUTLETS, OutletMonthData, WeekData, WeekId } from '../types/inventory';
 
 const STORAGE_OUTLETS_KEY = 'restaurant_outlets_list';
+const STORAGE_CUSTOM_OUTLETS_KEY = 'restaurant_custom_outlets_permanent';
+const STORAGE_DELETED_OUTLET_IDS_KEY = 'restaurant_deleted_outlet_ids';
 const STORAGE_DATA_PREFIX = 'restaurant_opname_';
 
 /**
@@ -35,31 +37,134 @@ export function createEmptyMonthData(outletId: string, period: string): OutletMo
 }
 
 /**
+ * Custom Outlet Local Persistence Helpers
+ */
+export function getStoredCustomOutlets(): Outlet[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_CUSTOM_OUTLETS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+export function saveStoredCustomOutlets(outlets: Outlet[]): void {
+  try {
+    localStorage.setItem(STORAGE_CUSTOM_OUTLETS_KEY, JSON.stringify(outlets));
+  } catch {}
+}
+
+export function getDeletedOutletIds(): string[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_DELETED_OUTLET_IDS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
+    }
+  } catch {}
+  return [];
+}
+
+export function markOutletDeleted(id: string): void {
+  try {
+    const current = getDeletedOutletIds();
+    if (!current.includes(id)) {
+      current.push(id);
+      localStorage.setItem(STORAGE_DELETED_OUTLET_IDS_KEY, JSON.stringify(current));
+    }
+    const custom = getStoredCustomOutlets().filter((o) => o.id !== id);
+    saveStoredCustomOutlets(custom);
+  } catch {}
+}
+
+export function unmarkOutletDeleted(id: string): void {
+  try {
+    const current = getDeletedOutletIds().filter((dId) => dId !== id);
+    localStorage.setItem(STORAGE_DELETED_OUTLET_IDS_KEY, JSON.stringify(current));
+  } catch {}
+}
+
+/**
+ * Intelligent Multi-source Outlet Merger:
+ * Combines default outlets + locally stored custom outlets + server outlets + firestore outlets,
+ * ensuring custom outlets are NEVER dropped or overwritten unless explicitly deleted.
+ */
+export function mergeOutlets(...sources: (Outlet[] | undefined | null)[]): Outlet[] {
+  const deletedIds = new Set(getDeletedOutletIds());
+  const storedCustom = getStoredCustomOutlets();
+
+  const map = new Map<string, Outlet>();
+
+  // 1. Base Default Outlets
+  for (const def of DEFAULT_OUTLETS) {
+    if (!deletedIds.has(def.id)) {
+      map.set(def.id, def);
+    }
+  }
+
+  // 2. Stored custom outlets
+  for (const cust of storedCustom) {
+    if (cust && cust.id && cust.name && !deletedIds.has(cust.id)) {
+      map.set(cust.id, { ...cust, isCustom: true });
+    }
+  }
+
+  // 3. Incoming source outlets from backend server, firestore, or cache
+  for (const source of sources) {
+    if (Array.isArray(source)) {
+      for (const item of source) {
+        if (item && item.id && item.name && !deletedIds.has(item.id)) {
+          const isDefault = DEFAULT_OUTLETS.some((d) => d.id === item.id);
+          const outletObj: Outlet = {
+            id: item.id,
+            name: item.name,
+            isCustom: item.isCustom ?? !isDefault,
+          };
+          map.set(item.id, outletObj);
+        }
+      }
+    }
+  }
+
+  const result = Array.from(map.values());
+
+  // Keep persistent custom outlet store synchronized
+  const customList = result.filter((o) => o.isCustom);
+  saveStoredCustomOutlets(customList);
+  try {
+    localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(result));
+  } catch {}
+
+  return result;
+}
+
+/**
  * Reads outlets from Local Storage and Server API (Zero failure fallback)
  */
 export async function getLocalOutlets(): Promise<Outlet[]> {
-  // Try Backend Express API
+  let serverData: Outlet[] = [];
   try {
     const res = await fetch('/api/outlets');
     if (res.ok) {
       const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(data));
-        return data;
+      if (Array.isArray(data)) {
+        serverData = data;
       }
     }
   } catch {}
 
-  // Try Local Storage
+  let cachedData: Outlet[] = [];
   try {
     const cached = localStorage.getItem(STORAGE_OUTLETS_KEY);
     if (cached) {
       const parsed = JSON.parse(cached);
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      if (Array.isArray(parsed)) cachedData = parsed;
     }
   } catch {}
 
-  return DEFAULT_OUTLETS;
+  return mergeOutlets(serverData, cachedData);
 }
 
 /**
@@ -94,8 +199,10 @@ export async function getLocalMonthData(outletId: string, period: string): Promi
  * Subscribes to real-time outlets updates via Firestore with graceful local fallback
  */
 export function subscribeOutlets(onUpdate: (outlets: Outlet[]) => void): () => void {
-  // Immediately provide current local/cached outlets
-  getLocalOutlets().then(onUpdate);
+  // Immediately provide current local/cached/custom merged outlets
+  getLocalOutlets().then((initial) => {
+    onUpdate(initial);
+  });
 
   try {
     const outletsCol = collection(db, 'outlets');
@@ -104,13 +211,14 @@ export function subscribeOutlets(onUpdate: (outlets: Outlet[]) => void): () => v
       async (snapshot) => {
         setPermissionDeniedState(false);
         if (snapshot.empty) {
-          // Attempt seeding
+          // Attempt seeding defaults if cloud is empty
           try {
             for (const item of DEFAULT_OUTLETS) {
               await setDoc(doc(db, 'outlets', item.id), item);
             }
           } catch {}
-          onUpdate(DEFAULT_OUTLETS);
+          const merged = mergeOutlets(DEFAULT_OUTLETS);
+          onUpdate(merged);
           return;
         }
 
@@ -119,14 +227,12 @@ export function subscribeOutlets(onUpdate: (outlets: Outlet[]) => void): () => v
           list.push(docSnap.data() as Outlet);
         });
 
-        if (list.length > 0) {
-          localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(list));
-          onUpdate(list);
-        }
+        const merged = mergeOutlets(list);
+        onUpdate(merged);
       },
       (error) => {
         handleFirestoreError(error, OperationType.GET, 'outlets');
-        // Gracefully supply local storage and server outlets without re-triggering Firestore
+        // Gracefully supply merged custom outlets without losing any user data
         getLocalOutlets().then(onUpdate);
       }
     );
@@ -147,9 +253,9 @@ export async function getOutlets(): Promise<Outlet[]> {
     if (!snapshot.empty) {
       const list: Outlet[] = [];
       snapshot.forEach((d) => list.push(d.data() as Outlet));
-      localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(list));
+      const merged = mergeOutlets(list);
       setPermissionDeniedState(false);
-      return list;
+      return merged;
     }
   } catch (err) {
     handleFirestoreError(err, OperationType.GET, 'outlets');
@@ -159,30 +265,41 @@ export async function getOutlets(): Promise<Outlet[]> {
 }
 
 /**
- * Adds a new outlet to Firestore & local storage
+ * Adds a new outlet to Firestore, Express backend, & permanent local storage
  */
 export async function addOutlet(name: string): Promise<Outlet> {
   const trimmed = name.trim().toUpperCase();
-  const id = `sh-${trimmed.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString().slice(-4)}`;
+  const slug = trimmed.toLowerCase().replace(/[^a-z0-9]/g, '-');
+  const id = `sh-${slug}-${Date.now().toString(36)}`;
   const newOutlet: Outlet = { id, name: trimmed, isCustom: true };
 
-  // Update local storage immediately
+  // 1. Unmark deleted if was previously marked
+  unmarkOutletDeleted(id);
+
+  // 2. Add to permanent local custom outlets immediately
+  const currentCustom = getStoredCustomOutlets().filter((o) => o.id !== id);
+  currentCustom.push(newOutlet);
+  saveStoredCustomOutlets(currentCustom);
+
+  // 3. Update active cached outlets list
+  const currentMerged = await getLocalOutlets();
+  const updated = mergeOutlets(currentMerged, [newOutlet]);
   try {
-    const current = await getLocalOutlets();
-    const updated = [...current.filter((o) => o.id !== id), newOutlet];
     localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(updated));
   } catch {}
 
-  // Sync with Backend Server API
+  // 4. Sync with Backend Express Server API (using exact client ID)
   try {
     await fetch('/api/outlets', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: trimmed }),
+      body: JSON.stringify({ id, name: trimmed, isCustom: true }),
     });
-  } catch {}
+  } catch (err) {
+    console.warn('Backend sync warning for outlet', err);
+  }
 
-  // Write to Firestore if permitted
+  // 5. Write to Firestore if permitted
   try {
     await setDoc(doc(db, 'outlets', id), newOutlet);
     setPermissionDeniedState(false);
@@ -194,22 +311,25 @@ export async function addOutlet(name: string): Promise<Outlet> {
 }
 
 /**
- * Deletes a custom outlet
+ * Deletes a custom outlet permanently
  */
 export async function deleteOutlet(id: string): Promise<void> {
-  // Update local storage
+  // 1. Mark as explicitly deleted in permanent store
+  markOutletDeleted(id);
+
+  // 2. Update local storage cache
   try {
     const current = await getLocalOutlets();
     const updated = current.filter((o) => o.id !== id);
     localStorage.setItem(STORAGE_OUTLETS_KEY, JSON.stringify(updated));
   } catch {}
 
-  // Update Backend Server API
+  // 3. Update Backend Server API
   try {
     await fetch(`/api/outlets/${encodeURIComponent(id)}`, { method: 'DELETE' });
   } catch {}
 
-  // Delete from Firestore
+  // 4. Delete from Firestore
   try {
     await deleteDoc(doc(db, 'outlets', id));
     setPermissionDeniedState(false);

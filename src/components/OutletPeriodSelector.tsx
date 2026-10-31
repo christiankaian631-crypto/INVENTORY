@@ -132,6 +132,9 @@ export const OutletPeriodSelector: React.FC<OutletPeriodSelectorProps> = ({
             <Building2 className="w-4 h-4 text-cyan-400" />
             Pilih Outlet Restoran ({outlets.length} Lokasi):
           </span>
+          <span className="text-[11px] text-slate-500 hidden sm:inline">
+            Outlet tersimpan permanen & tidak hilang saat refresh
+          </span>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -145,13 +148,20 @@ export const OutletPeriodSelector: React.FC<OutletPeriodSelectorProps> = ({
                     playClickSound();
                     onSelectOutlet(outlet.id);
                   }}
-                  className={`px-3.5 py-2 rounded-xl text-xs font-bold tracking-wide transition-all border ${
+                  className={`px-3.5 py-2 rounded-xl text-xs font-bold tracking-wide transition-all border flex items-center gap-1.5 ${
                     isSelected
                       ? 'bg-amber-500 text-slate-950 border-amber-400 shadow-lg shadow-amber-950/40 scale-105'
                       : 'bg-slate-950/80 text-slate-300 hover:text-white hover:bg-slate-800 border-slate-700/80'
                   }`}
                 >
-                  {outlet.name}
+                  <span>{outlet.name}</span>
+                  {outlet.isCustom && (
+                    <span className={`text-[9px] px-1 py-0.2 rounded font-semibold tracking-normal uppercase ${
+                      isSelected ? 'bg-amber-600/40 text-slate-950' : 'bg-slate-800 text-amber-400/90 border border-amber-500/30'
+                    }`}>
+                      Custom
+                    </span>
+                  )}
                 </button>
 
                 {/* Option to delete custom outlet */}
@@ -159,13 +169,17 @@ export const OutletPeriodSelector: React.FC<OutletPeriodSelectorProps> = ({
                   <button
                     onClick={(e) => {
                       e.stopPropagation();
-                      if (confirm(`Hapus outlet custom "${outlet.name}"?`)) {
+                      if (
+                        confirm(
+                          `Hapus outlet custom "${outlet.name}" secara permanen?\n\nOutlet ini dan data opnamenya akan dihapus dan tidak bisa dipulihkan.`
+                        )
+                      ) {
                         playAlertChime();
                         onDeleteOutlet(outlet.id);
                       }
                     }}
-                    className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-rose-600 text-white rounded-full flex items-center justify-center text-[10px] font-bold opacity-0 group-hover:opacity-100 transition-opacity"
-                    title="Hapus outlet"
+                    className="absolute -top-1.5 -right-1.5 w-4 h-4 bg-rose-600 hover:bg-rose-500 text-white rounded-full flex items-center justify-center text-[11px] font-bold shadow-md transition-all opacity-80 group-hover:opacity-100 hover:scale-125 z-10"
+                    title={`Hapus outlet custom ${outlet.name}`}
                   >
                     ×
                   </button>

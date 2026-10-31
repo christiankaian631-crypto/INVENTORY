@@ -178,7 +178,10 @@ export default function App() {
   // Add Outlet
   const handleAddOutlet = async (name: string) => {
     const created = await addOutlet(name);
-    setOutlets((prev) => [...prev, created]);
+    setOutlets((prev) => {
+      const exists = prev.some((o) => o.id === created.id);
+      return exists ? prev : [...prev, created];
+    });
     setSelectedOutletId(created.id);
   };
 

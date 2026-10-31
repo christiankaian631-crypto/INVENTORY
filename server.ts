@@ -41,7 +41,19 @@ function loadDatabase(): DatabaseSchema {
       const content = fs.readFileSync(DB_FILE, 'utf-8');
       const parsed = JSON.parse(content);
       if (parsed && Array.isArray(parsed.outlets)) {
-        return parsed;
+        const outletMap = new Map<string, { id: string; name: string; isCustom?: boolean }>();
+        for (const def of DEFAULT_OUTLETS) {
+          outletMap.set(def.id, def);
+        }
+        for (const out of parsed.outlets) {
+          if (out && out.id && out.name) {
+            outletMap.set(out.id, out);
+          }
+        }
+        return {
+          outlets: Array.from(outletMap.values()),
+          records: parsed.records || {},
+        };
       }
     }
   } catch (err) {
@@ -49,7 +61,7 @@ function loadDatabase(): DatabaseSchema {
   }
 
   const initialDb: DatabaseSchema = {
-    outlets: DEFAULT_OUTLETS,
+    outlets: [...DEFAULT_OUTLETS],
     records: {},
   };
   saveDatabase(initialDb);
@@ -79,18 +91,23 @@ async function startServer() {
     res.json(db.outlets);
   });
 
-  // 2. Add custom outlet
+  // 2. Add custom outlet (accepts client generated id if provided)
   app.post('/api/outlets', (req, res) => {
-    const { name } = req.body;
+    const { name, id: customId, isCustom } = req.body;
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'Nama outlet wajib diisi' });
     }
 
     const trimmed = name.trim().toUpperCase();
-    const id = `sh-${trimmed.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString().slice(-4)}`;
+    const id = customId || `sh-${trimmed.toLowerCase().replace(/[^a-z0-9]/g, '-')}-${Date.now().toString().slice(-4)}`;
 
-    const newOutlet = { id, name: trimmed, isCustom: true };
-    db.outlets.push(newOutlet);
+    const newOutlet = { id, name: trimmed, isCustom: isCustom !== false };
+    const existingIdx = db.outlets.findIndex((o) => o.id === id);
+    if (existingIdx >= 0) {
+      db.outlets[existingIdx] = newOutlet;
+    } else {
+      db.outlets.push(newOutlet);
+    }
     saveDatabase(db);
 
     res.json(newOutlet);
