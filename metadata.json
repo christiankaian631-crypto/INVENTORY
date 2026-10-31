@@ -1,0 +1,6 @@
+{
+  "name": "INVENTORY",
+  "description": "A comprehensive restaurant inventory management dashboard with real-time stock and par tracking, purchase orders, recipe costing, delivery receiving, and waste reduction.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
