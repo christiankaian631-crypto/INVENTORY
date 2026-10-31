@@ -1,0 +1,26 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helpers
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128;
+    }
+
+    // Outlets collection: Allows real-time shared multi-user restaurant inventory
+    match /outlets/{outletId} {
+      allow read: if isValidId(outletId);
+      allow write: if isValidId(outletId);
+    }
+
+    // Inventory collection: Isolated per outlet & month period (docId: "{outletId}_{period}")
+    match /inventory/{recordId} {
+      allow read: if isValidId(recordId);
+      allow write: if isValidId(recordId);
+    }
+  }
+}

@@ -64,6 +64,10 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="text-[10px] font-mono text-cyan-300 font-bold bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-800/40">
                 {activeWeekLabel}
               </span>
+              <span className="flex items-center gap-1.5 text-[10px] font-mono text-emerald-400 font-semibold bg-emerald-950/70 px-2 py-0.5 rounded border border-emerald-800/40">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                Live Online
+              </span>
             </div>
             <p className="text-xs text-slate-400">
               Audit Stok Multi-Warehouse: <span className="text-amber-400 font-medium">Bar</span> • <span className="text-emerald-400 font-medium">Kitchen</span> • <span className="text-blue-400 font-medium">Service</span>

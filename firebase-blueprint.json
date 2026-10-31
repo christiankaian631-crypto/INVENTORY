@@ -1,0 +1,58 @@
+{
+  "entities": {
+    "Outlet": {
+      "title": "Outlet",
+      "description": "Restaurant outlet branch",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of outlet"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of outlet"
+        },
+        "isCustom": {
+          "type": "boolean",
+          "description": "True if created as an additional outlet"
+        }
+      },
+      "required": ["id", "name"]
+    },
+    "OutletMonthInventory": {
+      "title": "OutletMonthInventory",
+      "description": "Monthly inventory opname records separated by outlet and period",
+      "type": "object",
+      "properties": {
+        "outletId": {
+          "type": "string",
+          "description": "Identifier of the outlet"
+        },
+        "period": {
+          "type": "string",
+          "description": "Year and month in YYYY-MM format"
+        },
+        "weeks": {
+          "type": "object",
+          "description": "Weekly data objects for week-1, week-2, week-3, week-4"
+        },
+        "lastUpdated": {
+          "type": "string",
+          "description": "ISO timestamp of last modification"
+        }
+      },
+      "required": ["outletId", "period", "weeks"]
+    }
+  },
+  "firestore": {
+    "/outlets/{outletId}": {
+      "schema": "Outlet",
+      "description": "Collection storing outlet locations"
+    },
+    "/inventory/{recordId}": {
+      "schema": "OutletMonthInventory",
+      "description": "Collection storing isolated monthly stock opname records for each outlet"
+    }
+  }
+}

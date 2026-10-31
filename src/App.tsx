@@ -21,9 +21,11 @@ import { AddOpnameItemModal } from './components/AddOpnameItemModal';
 import { downloadTemplateExcel, exportToExcel } from './utils/excelHelper';
 import {
   getOutlets,
+  subscribeOutlets,
   addOutlet,
   deleteOutlet,
   getOutletMonthData,
+  subscribeOutletMonthData,
   saveWeekData,
   linkPreviousWeekData,
   clearWeekData,
@@ -84,36 +86,24 @@ export default function App() {
   // Current outlet object
   const currentOutlet = outlets.find((o) => o.id === selectedOutletId) || outlets[0] || DEFAULT_OUTLETS[0];
 
-  // Load Outlets on Mount
+  // Real-time Outlets Subscription across all users
   useEffect(() => {
-    getOutlets().then((loaded) => {
-      if (loaded && loaded.length > 0) setOutlets(loaded);
+    const unsub = subscribeOutlets((loaded) => {
+      if (loaded && loaded.length > 0) {
+        setOutlets(loaded);
+      }
     });
+    return () => unsub();
   }, []);
 
-  // Fetch month data whenever outletId or period changes (Isolated Per Outlet)
-  const loadCurrentMonthData = useCallback(async () => {
+  // Real-time Month Opname Subscription (Completely Isolated Per Outlet)
+  useEffect(() => {
     setIsLoading(true);
-    try {
-      const data = await getOutletMonthData(selectedOutletId, periodString);
+    const unsub = subscribeOutletMonthData(selectedOutletId, periodString, (data) => {
       setMonthData(data);
-    } finally {
       setIsLoading(false);
-    }
-  }, [selectedOutletId, periodString]);
-
-  useEffect(() => {
-    loadCurrentMonthData();
-  }, [loadCurrentMonthData]);
-
-  // Periodic multi-user sync: refreshes data in background every 15s to keep all users connected
-  useEffect(() => {
-    const timer = setInterval(() => {
-      getOutletMonthData(selectedOutletId, periodString).then((latest) => {
-        setMonthData(latest);
-      });
-    }, 15000);
-    return () => clearInterval(timer);
+    });
+    return () => unsub();
   }, [selectedOutletId, periodString]);
 
   const handleToggleSound = () => {
